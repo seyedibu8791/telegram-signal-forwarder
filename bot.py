@@ -27,7 +27,7 @@ def process_message(text):
     Process message text:
     1. Check if contains 'Leverage'
     2. Replace 'Manually Cancelled TICKER' or 'Manually Cancelled #TICKER' with '/Close #TICKER'
-    Handles formats like: #ETH/USDT, #ETHUSDT, ETHUSDT, etc.
+    Handles formats like: #ETH/USDT, #ETHUSDT, #STORJUSDT USDT, etc.
     """
     if not text:
         return None, False
@@ -38,24 +38,39 @@ def process_message(text):
     # Replace "Manually Cancelled" patterns with "/Close"
     # Handles formats:
     # - "#ETH/USDT Manually Cancelled" -> "/Close #ETH/USDT"
-    # - "Manually Cancelled #ETH/USDT" -> "/Close #ETH/USDT"
+    # - "#STORJUSDT USDT Manually Cancelled" -> "/Close #STORJUSDT"
     # - "#ETHUSDT Manually Cancelled" -> "/Close #ETHUSDT"
-    # - "Manually Cancelled ETHUSDT" -> "/Close #ETHUSDT"
+    # - "Manually Cancelled #ETH/USDT" -> "/Close #ETH/USDT"
     
-    # Pattern 1: #TICKER Manually Cancelled (ticker with # before text)
-    # Matches: #ETH/USDT, #BTCUSDT, etc.
-    pattern1 = r'(#[A-Z0-9]+/?[A-Z0-9]*)\s+Manually\s+Cancelled'
-    processed_text = re.sub(pattern1, r'/Close \1', text, flags=re.IGNORECASE)
+    processed_text = text
     
-    # Pattern 2: Manually Cancelled #TICKER (text before ticker with #)
-    pattern2 = r'Manually\s+Cancelled\s+(#[A-Z0-9]+/?[A-Z0-9]*)'
-    processed_text = re.sub(pattern2, r'/Close \1', processed_text, flags=re.IGNORECASE)
+    # Pattern 1: #TICKER [OPTIONAL_TEXT] Manually Cancelled
+    # Matches: "#STORJUSDT USDT Manually Cancelled", "#ETHUSDT Manually Cancelled", etc.
+    # This extracts just the ticker (first token starting with #)
+    pattern1 = r'(#[A-Z0-9]+(?:/[A-Z0-9]+)?)\s+(?:[A-Z]*\s+)?Manually\s+Cancelled'
+    match1 = re.search(pattern1, processed_text, flags=re.IGNORECASE)
+    if match1:
+        ticker = match1.group(1)
+        processed_text = re.sub(pattern1, f'/Close {ticker}', processed_text, flags=re.IGNORECASE)
+        return processed_text, has_leverage
     
-    # Pattern 3: Manually Cancelled TICKER (no # in ticker)
-    # Matches: "Manually Cancelled ETHUSDT" or "Manually Cancelled ETH/USDT"
-    pattern3 = r'Manually\s+Cancelled\s+([A-Z0-9]+/?[A-Z0-9]+)'
-    if re.search(pattern3, processed_text, flags=re.IGNORECASE) and '#' not in processed_text:
-        processed_text = re.sub(pattern3, r'/Close #\1', processed_text, flags=re.IGNORECASE)
+    # Pattern 2: Manually Cancelled #TICKER
+    pattern2 = r'Manually\s+Cancelled\s+(#[A-Z0-9]+(?:/[A-Z0-9]+)?)'
+    match2 = re.search(pattern2, processed_text, flags=re.IGNORECASE)
+    if match2:
+        ticker = match2.group(1)
+        processed_text = re.sub(pattern2, f'/Close {ticker}', processed_text, flags=re.IGNORECASE)
+        return processed_text, has_leverage
+    
+    # Pattern 3: Manually Cancelled TICKER (no # in original)
+    pattern3 = r'Manually\s+Cancelled\s+([A-Z0-9]+(?:/[A-Z0-9]+)?)'
+    match3 = re.search(pattern3, processed_text, flags=re.IGNORECASE)
+    if match3 and '#' not in processed_text:
+        ticker = match3.group(1)
+        processed_text = re.sub(pattern3, f'/Close #{ticker}', processed_text, flags=re.IGNORECASE)
+        return processed_text, has_leverage
+    
+    return processed_text, has_leveragere.IGNORECASE)
     
     return processed_text, has_leverage
 
@@ -92,16 +107,16 @@ async def keep_alive():
             await asyncio.sleep(180)  # 3 minutes
             
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            print(f"Keep-alive ping at {current_time}")
+            print(f"Keep-alive ping at {current_time}", flush=True)
             
             if client.is_connected():
-                print(f"   Bot is active and connected")
+                print(f"   Bot is active and connected", flush=True)
             else:
-                print(f"   Bot connection lost, reconnecting...")
+                print(f"   Bot connection lost, reconnecting...", flush=True)
                 await client.connect()
                 
         except Exception as e:
-            print(f"Keep-alive error: {e}")
+            print(f"Keep-alive error: {e}", flush=True)
 
 async def health_check(request):
     """Health check endpoint for Render"""
@@ -160,36 +175,36 @@ async def start_web_server():
 
 async def main():
     """Start the bot"""
-    print("Starting Telegram Signal Forwarder Bot...")
-    print(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("Starting Telegram Signal Forwarder Bot...", flush=True)
+    print(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
     
     # Start the client
     await client.start(phone=PHONE)
-    print("Bot connected successfully!")
+    print("Bot connected successfully!", flush=True)
     
     # Save session string for future use (only on first run)
     if not SESSION_STRING:
         session_str = client.session.save()
-        print(f"\n{'='*60}")
-        print(f"IMPORTANT: Save this Session String as environment variable:")
-        print(f"{'='*60}")
-        print(f"{session_str}")
-        print(f"{'='*60}\n")
+        print(f"\n{'='*60}", flush=True)
+        print(f"IMPORTANT: Save this Session String as environment variable:", flush=True)
+        print(f"{'='*60}", flush=True)
+        print(f"{session_str}", flush=True)
+        print(f"{'='*60}\n", flush=True)
     
     # Verify channels
     try:
         source = await client.get_entity(SOURCE_CHANNEL)
         target = await client.get_entity(TARGET_CHANNEL)
-        print(f"Monitoring: {getattr(source, 'title', SOURCE_CHANNEL)}")
-        print(f"Forwarding to: {getattr(target, 'title', TARGET_CHANNEL)}")
+        print(f"Monitoring: {getattr(source, 'title', SOURCE_CHANNEL)}", flush=True)
+        print(f"Forwarding to: {getattr(target, 'title', TARGET_CHANNEL)}", flush=True)
     except Exception as e:
-        print(f"Error accessing channels: {e}")
-        print("Make sure you've joined both channels and have correct usernames/IDs")
+        print(f"Error accessing channels: {e}", flush=True)
+        print("Make sure you've joined both channels and have correct usernames/IDs", flush=True)
         return
     
-    print("Bot is running...")
-    print("Keep-alive enabled: Ping every 3 minutes")
-    print("=" * 60)
+    print("Bot is running...", flush=True)
+    print("Keep-alive enabled: Ping every 3 minutes", flush=True)
+    print("=" * 60, flush=True)
     
     # Start web server for Render health checks
     await start_web_server()
