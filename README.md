@@ -1,5 +1,3 @@
-# Save this as: README.md
-
 # Telegram Signal Auto-Forward Bot
 
 Automatically forwards trading signals from one Telegram channel to another.
