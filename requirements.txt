@@ -1,2 +1,3 @@
 # Save this as: requirements.txt
 telethon
+aiohttp
