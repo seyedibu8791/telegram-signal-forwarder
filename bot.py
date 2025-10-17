@@ -27,6 +27,7 @@ def process_message(text):
     Process message text:
     1. Check if contains 'Leverage'
     2. Replace 'Manually Cancelled TICKER' or 'Manually Cancelled #TICKER' with '/Close #TICKER'
+    Handles formats like: #ETH/USDT, #ETHUSDT, ETHUSDT, etc.
     """
     if not text:
         return None, False
@@ -34,25 +35,27 @@ def process_message(text):
     # Check if message contains "Leverage"
     has_leverage = 'leverage' in text.lower()
     
-    # Replace "Manually Cancelled TICKER" with "/Close TICKER"
-    # Handles both formats:
-    # - "Manually Cancelled BTCUSDT" -> "/Close #BTCUSDT"
-    # - "Manually Cancelled #BTCUSDT" -> "/Close #BTCUSDT"
-    # - "#BTCUSDT Manually Cancelled" -> "/Close #BTCUSDT"
+    # Replace "Manually Cancelled" patterns with "/Close"
+    # Handles formats:
+    # - "#ETH/USDT Manually Cancelled" -> "/Close #ETH/USDT"
+    # - "Manually Cancelled #ETH/USDT" -> "/Close #ETH/USDT"
+    # - "#ETHUSDT Manually Cancelled" -> "/Close #ETHUSDT"
+    # - "Manually Cancelled ETHUSDT" -> "/Close #ETHUSDT"
     
-    # Pattern 1: Manually Cancelled #TICKER or Manually Cancelled TICKER
-    pattern1 = r'Manually\s+Cancelled\s+(#?[A-Z0-9]+)'
+    # Pattern 1: #TICKER Manually Cancelled (ticker with # before text)
+    # Matches: #ETH/USDT, #BTCUSDT, etc.
+    pattern1 = r'(#[A-Z0-9]+/?[A-Z0-9]*)\s+Manually\s+Cancelled'
     processed_text = re.sub(pattern1, r'/Close \1', text, flags=re.IGNORECASE)
     
-    # Pattern 2: #TICKER Manually Cancelled (ticker before the text)
-    pattern2 = r'(#[A-Z0-9]+)\s+Manually\s+Cancelled'
+    # Pattern 2: Manually Cancelled #TICKER (text before ticker with #)
+    pattern2 = r'Manually\s+Cancelled\s+(#[A-Z0-9]+/?[A-Z0-9]*)'
     processed_text = re.sub(pattern2, r'/Close \1', processed_text, flags=re.IGNORECASE)
     
-    # Ensure hashtag is present in /Close command
-    # If we have "/Close TICKER" without #, add it
-    pattern3 = r'/Close\s+([A-Z0-9]+)(?!#)'
-    if re.search(pattern3, processed_text, flags=re.IGNORECASE):
-        processed_text = re.sub(r'/Close\s+(?!#)([A-Z0-9]+)', r'/Close #\1', processed_text, flags=re.IGNORECASE)
+    # Pattern 3: Manually Cancelled TICKER (no # in ticker)
+    # Matches: "Manually Cancelled ETHUSDT" or "Manually Cancelled ETH/USDT"
+    pattern3 = r'Manually\s+Cancelled\s+([A-Z0-9]+/?[A-Z0-9]+)'
+    if re.search(pattern3, processed_text, flags=re.IGNORECASE) and '#' not in processed_text:
+        processed_text = re.sub(pattern3, r'/Close #\1', processed_text, flags=re.IGNORECASE)
     
     return processed_text, has_leverage
 
@@ -63,9 +66,12 @@ async def handler(event):
         original_text = event.message.text
         processed_text, has_leverage = process_message(original_text)
         
-        # Check if message contains "Leverage" keyword
-        if not has_leverage:
-            print(f"Skipped message (no 'Leverage' found) - {datetime.now().strftime('%H:%M:%S')}")
+        # Check if message contains "Manually Cancelled" (always forward these)
+        has_cancelled = 'manually cancelled' in original_text.lower() if original_text else False
+        
+        # Forward if message contains "Leverage" OR "Manually Cancelled"
+        if not has_leverage and not has_cancelled:
+            print(f"Skipped message (no 'Leverage' or 'Manually Cancelled' found) - {datetime.now().strftime('%H:%M:%S')}")
             return
         
         # Forward the processed message
