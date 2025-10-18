@@ -92,7 +92,7 @@ async def handler(event):
 async def keep_alive():
     while True:
         try:
-            await asyncio.sleep(180)  # 3 minutes
+            await asyncio.sleep(300)  # 3 minutes
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             print(f"Keep-alive ping at {current_time}", flush=True)
 
@@ -162,7 +162,7 @@ async def ping(request):
         if auth_header != f"Bearer {PING_TOKEN}":
             return web.Response(status=401, text="Unauthorized")
 
-    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC+5:30')
     print(f"Ping received at {now}", flush=True)
     return web.json_response({"status": "alive", "time": now})
 
