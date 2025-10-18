@@ -15,6 +15,7 @@ SOURCE_CHANNEL = os.environ.get('SOURCE_CHANNEL')
 TARGET_CHANNEL = os.environ.get('TARGET_CHANNEL')
 SESSION_STRING = os.environ.get('SESSION_STRING', '')
 PORT = int(os.environ.get('PORT', 10000))
+PING_TOKEN = os.environ.get('PING_TOKEN')
 
 # Initialize client with session string if available
 if SESSION_STRING:
@@ -27,18 +28,10 @@ else:
 # MESSAGE PROCESSING FUNCTION
 # =============================
 def process_message(text):
-    """
-    Process message text:
-    1. Check if contains 'Leverage'
-    2. Replace 'Manually Cancelled TICKER' or 'Manually Cancelled #TICKER' with '/Close #TICKER'
-    Handles formats like: #ETH/USDT, #ETHUSDT, #STORJUSDT USDT, etc.
-    """
     if not text:
         return None, False
 
-    # Check if message contains "Leverage"
     has_leverage = 'leverage' in text.lower()
-
     processed_text = text
 
     # Pattern 1: "#TICKER [OPTIONAL_TEXT] Manually Cancelled"
@@ -65,7 +58,6 @@ def process_message(text):
         processed_text = re.sub(pattern3, f'/Close #{ticker}', processed_text, flags=re.IGNORECASE)
         return processed_text, has_leverage
 
-    # No modifications, just return
     return processed_text, has_leverage
 
 
@@ -74,20 +66,15 @@ def process_message(text):
 # =============================
 @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
 async def handler(event):
-    """Handle new messages from source channel"""
     try:
         original_text = event.message.text
         processed_text, has_leverage = process_message(original_text)
-
-        # Check if message contains "Manually Cancelled"
         has_cancelled = 'manually cancelled' in original_text.lower() if original_text else False
 
-        # Forward only if it has "Leverage" or "Manually Cancelled"
         if not has_leverage and not has_cancelled:
             print(f"Skipped message (no 'Leverage' or 'Manually Cancelled') - {datetime.now().strftime('%H:%M:%S')}")
             return
 
-        # Forward processed message
         if processed_text:
             await client.send_message(TARGET_CHANNEL, processed_text)
             print(f"Forwarded message at {datetime.now().strftime('%H:%M:%S')}:")
@@ -103,7 +90,6 @@ async def handler(event):
 # KEEP-ALIVE TASK
 # =============================
 async def keep_alive():
-    """Send keep-alive ping every 3 minutes to prevent Render from sleeping"""
     while True:
         try:
             await asyncio.sleep(180)  # 3 minutes
@@ -125,6 +111,7 @@ async def keep_alive():
 # =============================
 async def health_check(request):
     return web.Response(text="Bot is running!", status=200)
+
 
 async def status_page(request):
     html = f"""
@@ -165,11 +152,26 @@ async def status_page(request):
     return web.Response(text=html, content_type='text/html')
 
 
+# =============================
+# PING ENDPOINT FOR KEEPALIVE
+# =============================
+async def ping(request):
+    """Ping endpoint for GitHub Action or uptime monitor"""
+    auth_header = request.headers.get("Authorization")
+    if PING_TOKEN:
+        if auth_header != f"Bearer {PING_TOKEN}":
+            return web.Response(status=401, text="Unauthorized")
+
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+    print(f"Ping received at {now}", flush=True)
+    return web.json_response({"status": "alive", "time": now})
+
+
 async def start_web_server():
-    """Start health check web server for Render"""
     app = web.Application()
     app.router.add_get('/', status_page)
     app.router.add_get('/health', health_check)
+    app.router.add_get('/ping', ping)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -185,11 +187,9 @@ async def main():
     print("Starting Telegram Signal Forwarder Bot...", flush=True)
     print(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
 
-    # Start client
     await client.start(phone=PHONE)
     print("Bot connected successfully!", flush=True)
 
-    # Save session string (first run only)
     if not SESSION_STRING:
         session_str = client.session.save()
         print("\n" + "=" * 60, flush=True)
@@ -198,7 +198,6 @@ async def main():
         print(session_str, flush=True)
         print("=" * 60 + "\n", flush=True)
 
-    # Verify channels
     try:
         source = await client.get_entity(SOURCE_CHANNEL)
         target = await client.get_entity(TARGET_CHANNEL)
@@ -213,11 +212,9 @@ async def main():
     print("Keep-alive enabled: Ping every 3 minutes", flush=True)
     print("=" * 60, flush=True)
 
-    # Start web server and keep-alive background task
     await start_web_server()
     keep_alive_task = asyncio.create_task(keep_alive())
 
-    # Keep running
     try:
         await client.run_until_disconnected()
     finally:
