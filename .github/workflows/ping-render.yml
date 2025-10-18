@@ -14,5 +14,5 @@ jobs:
         run: |
           echo "Pinging Render app..."
           curl -fsS -H "Authorization: Bearer ${{ secrets.RENDER_PING_TOKEN }}" \
-            https://tradingview-telegram-webhook-jnmi.onrender.com/ping \
+            https://telegram-signal-forwarder.onrender.com/ping \
             || echo "Ping failed"
