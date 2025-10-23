@@ -162,7 +162,7 @@ async def ping(request):
         if auth_header != f"Bearer {PING_TOKEN}":
             return web.Response(status=401, text="Unauthorized")
 
-    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC+5:30')
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
     print(f"Ping received at {now}", flush=True)
     return web.json_response({"status": "alive", "time": now})
 
