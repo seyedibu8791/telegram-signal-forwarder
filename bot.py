@@ -2,13 +2,13 @@
 import re
 import os
 import asyncio
-from datetime import datetime, timedelta
-from aiohttp import web
+from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from aiohttp import web
 
 # =============================
-# CONFIGURATION
+# Configuration - Environment Variables
 # =============================
 API_ID = os.environ.get('API_ID')
 API_HASH = os.environ.get('API_HASH')
@@ -20,7 +20,12 @@ PORT = int(os.environ.get('PORT', 10000))
 PING_TOKEN = os.environ.get('PING_TOKEN')
 
 # =============================
-# TELEGRAM CLIENT
+# Local timezone (UTC+5:30)
+# =============================
+LOCAL_TZ = timezone(timedelta(hours=5, minutes=30))
+
+# =============================
+# Initialize Telegram client
 # =============================
 if SESSION_STRING:
     client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
@@ -28,31 +33,24 @@ else:
     client = TelegramClient('signal_forwarder', API_ID, API_HASH)
 
 # =============================
-# GLOBAL CACHE TO PREVENT DUPLICATES (Memory-Safe)
+# Store forwarded messages to prevent duplicates
 # =============================
-processed_messages = {}  # {message_id: timestamp}
-DUPLICATE_TTL = timedelta(minutes=10)  # keep message IDs for 10 minutes
-
-def cleanup_processed_messages():
-    """Remove old message IDs to prevent memory growth"""
-    now = datetime.utcnow()
-    to_delete = [msg_id for msg_id, ts in processed_messages.items() if now - ts > DUPLICATE_TTL]
-    for msg_id in to_delete:
-        del processed_messages[msg_id]
+processed_messages = {}
 
 # =============================
-# MESSAGE PARSER
+# MESSAGE PARSER - Format trading signals
 # =============================
 def format_signal_message(text: str):
-    # Manually Cancelled
-    cancel_match = re.search(r'(?:Manually\s+Cancelled\s+)(#?[A-Z0-9]+(?:/[A-Z0-9]+)?)', text, re.IGNORECASE)
-    if cancel_match:
-        ticker = cancel_match.group(1).replace('/', '')
-        if not ticker.startswith('#'):
-            ticker = f"#{ticker}"
-        return f"/Close {ticker}", True
-
-    # Extract values for normal signal
+    """
+    Parses messages like:
+    BTC/USDT SHORT 🛑
+    Leverage 30x
+    Entries 112700
+    Target 1 110200
+    Target 2 107000
+    SL 114500
+    """
+    # --- Extract values using regex ---
     pair_match = re.search(r'([A-Z]{2,10})/?([A-Z]{2,10})?', text)
     direction_match = re.search(r'\b(BUY|LONG|SELL|SHORT)\b', text, re.IGNORECASE)
     leverage_match = re.search(r'Leverage\s*([0-9]+x)', text, re.IGNORECASE)
@@ -61,17 +59,14 @@ def format_signal_message(text: str):
     sl_match = re.search(r'SL\s*([\d.]+)', text, re.IGNORECASE)
 
     if not (pair_match and direction_match and entry_match and target_match and sl_match):
-        return None, False
+        return None
 
     base = pair_match.group(1)
     quote = pair_match.group(2) or 'USDT'
     pair = f"{base}{quote}"
 
     direction_raw = direction_match.group(1).upper()
-    if direction_raw in ['BUY', 'LONG']:
-        direction = "BUY 💹"
-    else:
-        direction = "SELL 🛑"
+    direction = "BUY 💹" if direction_raw in ['BUY', 'LONG'] else "SELL 🛑"
 
     leverage = leverage_match.group(1).upper() if leverage_match else "N/A"
     entry = entry_match.group(1)
@@ -82,14 +77,14 @@ def format_signal_message(text: str):
         f"Action: {direction}\n"
         f"Symbol: #{pair}\n"
         f"--- ⌁ ---\n"
-        f"Exchange: Binance Futures\n"
+        f"Exchange: Binance Futures\n\n"
         f"Leverage: Cross ({leverage})\n"
         f"--- ⌁ ---\n"
-        f"☑️ Entry Price: {entry}\n"
+        f"☑️ Entry Price: {entry}\n\n"
         f"☑️ Take-Profit: {target}\n"
         f"☑️ Stop Loss: {sl}"
     )
-    return formatted, True
+    return formatted
 
 # =============================
 # MESSAGE HANDLER
@@ -97,25 +92,37 @@ def format_signal_message(text: str):
 @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
 async def handler(event):
     try:
-        cleanup_processed_messages()  # clean old IDs first
-
         msg_id = event.message.id
-        if msg_id in processed_messages:
-            return  # skip duplicate
-        processed_messages[msg_id] = datetime.utcnow()
+        original_text = event.message.text
 
-        text = event.message.text
-        processed_text, is_valid = format_signal_message(text)
-
-        if not is_valid:
-            print(f"Skipped message (not valid signal) - {datetime.now().strftime('%H:%M:%S')}")
+        # Prevent duplicate forwarding
+        last_time = processed_messages.get(msg_id)
+        if last_time:
             return
 
+        processed_text = None
+
+        # Check if Manually Cancelled
+        cancelled_match = re.search(r'#?([A-Z0-9]+)/?([A-Z0-9]+)?\s+Manually Cancelled', original_text, re.IGNORECASE)
+        if cancelled_match:
+            base = cancelled_match.group(1)
+            quote = cancelled_match.group(2) or 'USDT'
+            pair = f"{base}{quote}"
+            processed_text = f"/close #{pair}"
+
+        # Check if Leverage signal
+        elif 'leverage' in original_text.lower():
+            formatted = format_signal_message(original_text)
+            if formatted:
+                processed_text = formatted
+
+        # Forward if any
         if processed_text:
             await client.send_message(TARGET_CHANNEL, processed_text)
-            print(f"Forwarded message at {datetime.now().strftime('%H:%M:%S')}:")
-            print(f"   Original: {text[:80]}...")
-            if processed_text != text:
+            processed_messages[msg_id] = datetime.now(LOCAL_TZ)
+            print(f"Forwarded message at {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')}:")
+            print(f"   Original: {original_text[:80]}...")
+            if processed_text != original_text:
                 print(f"   Modified: {processed_text[:80]}...")
 
     except Exception as e:
@@ -127,13 +134,14 @@ async def handler(event):
 async def keep_alive():
     while True:
         try:
-            await asyncio.sleep(300)  # every 5 minutes
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            print(f"Keep-alive ping at {now}")
+            await asyncio.sleep(180)  # 3 minutes
+            now = datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
+            print(f"Keep-alive ping at {now}", flush=True)
             if not client.is_connected():
+                print("Bot disconnected, reconnecting...", flush=True)
                 await client.connect()
         except Exception as e:
-            print(f"Keep-alive error: {e}")
+            print(f"Keep-alive error: {e}", flush=True)
 
 # =============================
 # WEB SERVER FOR RENDER
@@ -162,8 +170,8 @@ async def status_page(request):
             <h2>Configuration</h2>
             <p><strong>Source Channel:</strong> {SOURCE_CHANNEL}</p>
             <p><strong>Target Channel:</strong> {TARGET_CHANNEL}</p>
-            <p><strong>Keep-Alive:</strong> Every 5 minutes</p>
-            <p><strong>Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p><strong>Keep-Alive:</strong> Every 3 minutes</p>
+            <p><strong>Time:</strong> {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')}</p>
         </div>
     </body>
     </html>
@@ -172,10 +180,11 @@ async def status_page(request):
 
 async def ping(request):
     auth_header = request.headers.get("Authorization")
-    if PING_TOKEN and auth_header != f"Bearer {PING_TOKEN}":
-        return web.Response(status=401, text="Unauthorized")
-    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-    print(f"Ping received at {now}")
+    if PING_TOKEN:
+        if auth_header != f"Bearer {PING_TOKEN}":
+            return web.Response(status=401, text="Unauthorized")
+    now = datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
+    print(f"Ping received at {now}", flush=True)
     return web.json_response({"status": "alive", "time": now})
 
 async def start_web_server():
@@ -194,7 +203,8 @@ async def start_web_server():
 # =============================
 async def main():
     print("Starting Telegram Signal Forwarder Bot...", flush=True)
-    print(f"Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    print(f"Current time: {datetime.now(LOCAL_TZ).strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+
     await client.start(phone=PHONE)
     print("Bot connected successfully!", flush=True)
 
@@ -209,20 +219,24 @@ async def main():
     try:
         source = await client.get_entity(SOURCE_CHANNEL)
         target = await client.get_entity(TARGET_CHANNEL)
-        print(f"Monitoring: {getattr(source,'title',SOURCE_CHANNEL)}")
-        print(f"Forwarding to: {getattr(target,'title',TARGET_CHANNEL)}")
+        print(f"Monitoring: {getattr(source, 'title', SOURCE_CHANNEL)}")
+        print(f"Forwarding to: {getattr(target, 'title', TARGET_CHANNEL)}")
     except Exception as e:
         print(f"Error accessing channels: {e}")
         return
 
     await start_web_server()
-    asyncio.create_task(keep_alive())
-    await client.run_until_disconnected()
+    keep_alive_task = asyncio.create_task(keep_alive())
+
+    try:
+        await client.run_until_disconnected()
+    finally:
+        keep_alive_task.cancel()
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nBot stopped by user")
+        print("Bot stopped by user")
     except Exception as e:
         print(f"Fatal error: {e}")
