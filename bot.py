@@ -72,10 +72,10 @@ def format_signal_message(text: str):
         f"Action: {direction}\n"
         f"Symbol: #{pair}\n"
         f"--- ⌁ ---\n"
-        f"Exchange: Binance Futures\n\n"
+        f"Exchange: Binance Futures\n"
         f"Leverage: Cross ({leverage})\n"
         f"--- ⌁ ---\n"
-        f"☑️ Entry Price: {entry}\n\n"
+        f"☑️ Entry Price: {entry}\n"
         f"☑️ Take-Profit: {target}\n"
         f"☑️ Stop Loss: {sl}"
     )
