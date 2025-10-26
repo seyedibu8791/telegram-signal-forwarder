@@ -6,6 +6,7 @@ from telethon.sessions import StringSession
 import asyncio
 from datetime import datetime, timedelta, timezone
 from aiohttp import web
+import hashlib
 
 # =============================
 # CONFIGURATION
@@ -33,14 +34,19 @@ IST = timezone(timedelta(hours=5, minutes=30))
 def now_ist():
     return datetime.now(IST)
 
-processed_messages = {}  # Track forwarded messages to prevent duplicates
+# Track processed messages: {hash_key: timestamp}
+processed_messages = {}
+
+def get_message_hash(text: str) -> str:
+    """Generate a stable hash for message text"""
+    return hashlib.sha256(text.strip().lower().encode()).hexdigest()
 
 # =============================
 # MESSAGE PARSER / FORMATTER
 # =============================
 def format_signal_message(text: str):
     """
-    Parses Leverage signals like:
+    Parses messages like:
     BTC/USDT SHORT 🛑
     Leverage 30x
     Entries 112700
@@ -86,11 +92,7 @@ def format_signal_message(text: str):
 # MESSAGE PROCESSOR
 # =============================
 def process_message(text: str):
-    """
-    Processes messages:
-    - Manually Cancelled signals → /close #PAIR
-    - Leverage signals → formatted
-    """
+    """Process incoming text and return formatted message + flag"""
     if not text:
         return None, False
 
@@ -104,7 +106,7 @@ def process_message(text: str):
         pair = f"{base}{quote}"
         return f"/close #{pair}", False
 
-    # --- Handle normal Leverage signals ---
+    # --- Handle Leverage signal ---
     if 'leverage' in text_lower:
         formatted = format_signal_message(text)
         if formatted:
@@ -117,27 +119,31 @@ def process_message(text: str):
 # =============================
 @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
 async def handler(event):
+    original_text = event.message.text or ""
     msg_id = event.message.id
     now = now_ist()
 
-    # Cleanup old processed messages (older than 24h)
-    keys_to_remove = [k for k, t in processed_messages.items() if now - t > timedelta(hours=24)]
-    for k in keys_to_remove:
-        processed_messages.pop(k)
+    # Cleanup old messages (older than 24h)
+    for k in list(processed_messages.keys()):
+        if now - processed_messages[k] > timedelta(hours=24):
+            processed_messages.pop(k, None)
 
-    if msg_id in processed_messages:
-        return  # Skip duplicates
+    # Create unique hash based on text content
+    msg_hash = get_message_hash(original_text)
 
-    original_text = event.message.text
+    if msg_hash in processed_messages:
+        print(f"[DUPLICATE] Ignored duplicate signal (hash match): {original_text[:60]}...")
+        return
+
     processed_text, _ = process_message(original_text)
 
     if processed_text:
         await client.send_message(TARGET_CHANNEL, processed_text)
-        processed_messages[msg_id] = now
-        print(f"[{now.strftime('%H:%M:%S')}] Forwarded message:")
-        print(f"   Original: {original_text[:80]}...")
+        processed_messages[msg_hash] = now
+        print(f"[{now.strftime('%H:%M:%S')}] Forwarded unique message:")
+        print(f"   Original: {original_text[:100]}...")
         if processed_text != original_text:
-            print(f"   Modified: {processed_text[:80]}...")
+            print(f"   Modified: {processed_text[:100]}...")
 
 # =============================
 # KEEP-ALIVE TASK
@@ -147,9 +153,9 @@ async def keep_alive():
         try:
             await asyncio.sleep(180)  # 3 minutes
             now = now_ist()
-            print(f"Keep-alive ping at {now}", flush=True)
+            print(f"Keep-alive ping at {now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
             if not client.is_connected():
-                print("Bot connection lost, reconnecting...", flush=True)
+                print("Bot disconnected, reconnecting...", flush=True)
                 await client.connect()
         except Exception as e:
             print(f"Keep-alive error: {e}", flush=True)
@@ -162,36 +168,21 @@ async def health_check(request):
 
 async def status_page(request):
     html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Telegram Forwarder Bot</title>
-        <style>
-            body {{ font-family: Arial; max-width: 800px; margin: 50px auto; padding: 20px; }}
-            .status {{ background: #4CAF50; color: white; padding: 20px; border-radius: 5px; }}
-            .info {{ background: #f5f5f5; padding: 15px; margin: 20px 0; border-radius: 5px; }}
-        </style>
-    </head>
+    <html><head><title>Telegram Forwarder Bot</title></head>
     <body>
-        <div class="status">
-            <h1>Telegram Signal Forwarder Bot</h1>
-            <p>Status: <strong>RUNNING</strong></p>
-        </div>
-        <div class="info">
-            <h2>Configuration</h2>
-            <p><strong>Source Channel:</strong> {SOURCE_CHANNEL}</p>
-            <p><strong>Target Channel:</strong> {TARGET_CHANNEL}</p>
-            <p><strong>Keep-Alive:</strong> Every 3 minutes</p>
-            <p><strong>Time:</strong> {now_ist().strftime('%Y-%m-%d %H:%M:%S')}</p>
-        </div>
-    </body>
-    </html>
+        <h2>Telegram Forwarder Bot - Status</h2>
+        <p><b>Status:</b> RUNNING</p>
+        <p><b>Source:</b> {SOURCE_CHANNEL}</p>
+        <p><b>Target:</b> {TARGET_CHANNEL}</p>
+        <p><b>Time:</b> {now_ist().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        <p><b>Processed Messages:</b> {len(processed_messages)}</p>
+    </body></html>
     """
     return web.Response(text=html, content_type='text/html')
 
 async def ping(request):
-    auth_header = request.headers.get("Authorization")
-    if PING_TOKEN and auth_header != f"Bearer {PING_TOKEN}":
+    auth = request.headers.get("Authorization")
+    if PING_TOKEN and auth != f"Bearer {PING_TOKEN}":
         return web.Response(status=401, text="Unauthorized")
     now = now_ist()
     print(f"Ping received at {now}", flush=True)
@@ -212,18 +203,17 @@ async def start_web_server():
 # MAIN ENTRY
 # =============================
 async def main():
-    print("Starting Telegram Signal Forwarder Bot...", flush=True)
-    print(f"Current time: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-
+    print("Starting Telegram Signal Forwarder Bot...")
+    print(f"Time: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}")
     await client.start(phone=PHONE)
-    print("Bot connected successfully!", flush=True)
+    print("Bot connected successfully!")
 
     if not SESSION_STRING:
         session_str = client.session.save()
-        print("="*60)
-        print("IMPORTANT: Save this Session String as environment variable:")
+        print("="*50)
+        print("SAVE THIS SESSION STRING:")
         print(session_str)
-        print("="*60)
+        print("="*50)
 
     try:
         source = await client.get_entity(SOURCE_CHANNEL)
@@ -236,7 +226,6 @@ async def main():
 
     await start_web_server()
     keep_alive_task = asyncio.create_task(keep_alive())
-
     try:
         await client.run_until_disconnected()
     finally:
@@ -246,6 +235,6 @@ if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nBot stopped by user")
+        print("Bot stopped manually.")
     except Exception as e:
         print(f"Fatal error: {e}")
