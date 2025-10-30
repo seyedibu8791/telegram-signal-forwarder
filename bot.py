@@ -1,5 +1,8 @@
 import re
 import os
+import time
+import threading
+import requests
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 import asyncio
@@ -19,6 +22,7 @@ SESSION_STRING = os.environ.get('SESSION_STRING', '')
 PORT = int(os.environ.get('PORT', 10000))
 PING_TOKEN = os.environ.get('PING_TOKEN')
 DUPLICATE_WINDOW = int(os.environ.get('DUPLICATE_WINDOW', 5))  # seconds
+SELF_URL = os.environ.get('RENDER_URL')  # your Render app URL
 
 # Initialize Telegram client
 if SESSION_STRING:
@@ -86,13 +90,11 @@ def format_signal_message(text: str):
 # MESSAGE PROCESSOR
 # =============================
 def process_message(text: str):
-    """Parses and converts messages to standard format"""
     if not text:
         return None, False
 
     text_lower = text.lower()
 
-    # --- Handle manually cancelled signals ---
     cancel_match = re.search(
         r'#?([A-Z0-9]{1,10})/?([A-Z0-9]{1,10})?\s+Manually\s+Cancelled', 
         text, re.IGNORECASE
@@ -103,7 +105,6 @@ def process_message(text: str):
         pair = f"{base}{quote}".lower()
         return f"/close #{pair}", False
 
-    # --- Handle standard leverage signals ---
     if 'leverage' in text_lower:
         formatted = format_signal_message(text)
         if formatted:
@@ -119,7 +120,6 @@ async def handler(event):
     original_text = event.message.text or ""
     now = now_ist()
 
-    # cleanup old records
     for k in list(processed_messages.keys()):
         if now - processed_messages[k] > timedelta(hours=24):
             processed_messages.pop(k, None)
@@ -133,7 +133,6 @@ async def handler(event):
     if not processed_text:
         return
 
-    # --- Skip same pair within DUPLICATE_WINDOW ---
     pair_match = re.search(r'#?([A-Z]{2,10})(USDT|USD)?', processed_text, re.IGNORECASE)
     if pair_match:
         pair = pair_match.group(1).upper()
@@ -143,7 +142,6 @@ async def handler(event):
             return
         recent_signals[pair] = now
 
-    # --- Forward to target ---
     await client.send_message(TARGET_CHANNEL, processed_text)
     processed_messages[msg_hash] = now
     print(f"[{now.strftime('%H:%M:%S')}] ✅ Forwarded:")
@@ -152,18 +150,22 @@ async def handler(event):
         print(f"→ Converted: {processed_text}")
 
 # =============================
-# KEEP-ALIVE
+# SELF PING (Render Keep-Alive)
 # =============================
-async def keep_alive():
+def self_ping():
+    """Ping the bot every 5 minutes to keep Render alive."""
+    if not SELF_URL:
+        print("⚠️ No RENDER_URL set, skipping self-ping.")
+        return
     while True:
         try:
-            await asyncio.sleep(180)
-            now = now_ist()
-            print(f"[PING] Keep-alive {now.strftime('%H:%M:%S')}")
-            if not client.is_connected():
-                await client.connect()
+            requests.get(f"{SELF_URL}/ping")
+            print(f"[SELF-PING] Ping sent to {SELF_URL}")
         except Exception as e:
-            print(f"[KeepAliveError] {e}")
+            print(f"[PING ERROR] {e}")
+        time.sleep(5 * 60)  # every 5 minutes
+
+threading.Thread(target=self_ping, daemon=True).start()
 
 # =============================
 # WEB SERVER
@@ -171,70 +173,29 @@ async def keep_alive():
 async def health_check(request):
     return web.Response(text="Bot is running!", status=200)
 
-async def status_page(request):
-    html = f"""
-    <html><head><title>Telegram Forwarder Bot</title></head>
-    <body>
-    <h2>Telegram Forwarder Bot - Status</h2>
-    <p><b>Status:</b> RUNNING</p>
-    <p><b>Source:</b> {SOURCE_CHANNEL}</p>
-    <p><b>Target:</b> {TARGET_CHANNEL}</p>
-    <p><b>Time:</b> {now_ist().strftime('%Y-%m-%d %H:%M:%S')}</p>
-    <p><b>Processed Messages:</b> {len(processed_messages)}</p>
-    </body></html>
-    """
-    return web.Response(text=html, content_type='text/html')
-
 async def ping(request):
-    auth = request.headers.get("Authorization")
-    if PING_TOKEN and auth != f"Bearer {PING_TOKEN}":
-        return web.Response(status=401, text="Unauthorized")
-    now = now_ist()
-    print(f"Ping received at {now}")
-    return web.json_response({"status": "alive", "time": now.strftime('%Y-%m-%d %H:%M:%S')})
+    return web.Response(text="pong", status=200)
 
 async def start_web_server():
     app = web.Application()
-    app.router.add_get('/', status_page)
     app.router.add_get('/health', health_check)
     app.router.add_get('/ping', ping)
-
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    print(f"Web server started on port {PORT}")
+    print(f"🌐 Web server started on port {PORT}")
 
 # =============================
 # MAIN
 # =============================
 async def main():
-    print("Starting Telegram Signal Forwarder Bot...")
+    print("🚀 Starting Telegram Signal Forwarder Bot...")
     await client.start(phone=PHONE)
-    print("Bot connected successfully!")
-
-    if not SESSION_STRING:
-        session_str = client.session.save()
-        print("=" * 50)
-        print("SAVE THIS SESSION STRING:")
-        print(session_str)
-        print("=" * 50)
-
-    try:
-        source = await client.get_entity(SOURCE_CHANNEL)
-        target = await client.get_entity(TARGET_CHANNEL)
-        print(f"Monitoring: {getattr(source, 'title', SOURCE_CHANNEL)}")
-        print(f"Forwarding to: {getattr(target, 'title', TARGET_CHANNEL)}")
-    except Exception as e:
-        print(f"Error accessing channels: {e}")
-        return
+    print("✅ Bot connected successfully!")
 
     await start_web_server()
-    keep_alive_task = asyncio.create_task(keep_alive())
-    try:
-        await client.run_until_disconnected()
-    finally:
-        keep_alive_task.cancel()
+    await client.run_until_disconnected()
 
 if __name__ == '__main__':
     try:
