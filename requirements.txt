@@ -1,4 +1,4 @@
 # Save this as: requirements.txt
-telethon
-aiohttp
-requests
+telethon==1.34.0
+aiohttp==3.9.5
+requests==2.32.3
